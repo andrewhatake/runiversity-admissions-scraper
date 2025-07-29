@@ -1,0 +1,8 @@
+*.ipynb
+*.csv
+*.tsv
+*.json
+*.log
+*.txt
+*.xlsx
+Pipfile.lock
