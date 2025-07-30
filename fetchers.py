@@ -1,16 +1,27 @@
 import pandas as pd
-from curl_cffi import requests
-from io import BytesIO
-from pathlib import Path
+import numpy as np
 import datetime as dt
+
+from curl_cffi import requests
+from io import BytesIO, StringIO
+from pathlib import Path
+from bs4 import BeautifulSoup, SoupStrainer
 
 
 class BaseCompetitionFetcher:
     def __init__(self, url: str):
         self.url = url
 
-    def load_pipeline(self):
-        raise NotImplementedError
+    def load_pipeline(self, output_dir: str):
+        output_dir = Path(output_dir)
+        buf = self._fetch_buffer()
+        df = self._process_df(buf)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (
+            df
+            .assign(ts=dt.datetime.now().strftime("%Y%m%d_%H"), ds=self.url.split('/')[-1].split('.')[0])
+            .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=["ts", "ds"])
+        )
 
 
 class HSECompetitionFetcher(BaseCompetitionFetcher):
@@ -64,13 +75,42 @@ class HSECompetitionFetcher(BaseCompetitionFetcher):
         )
         return res
 
-    def load_pipeline(self, output_dir: str):
-        output_dir = Path(output_dir)
-        buf = self._fetch_buffer()
-        df = self._process_df(buf)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (
-            df
-            .assign(ts=dt.datetime.now().strftime("%Y%m%d_%H%M%S"), ds=self.url.split('/')[-1].split('.')[0])
-            .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=["ds", "ts"])
+class MSUCompetitionFetcher(BaseCompetitionFetcher):
+    def __init__(self, url: str):
+        url_, tag_id_ = url.split("#")
+        super().__init__(url_)
+        self.tag_id = tag_id_
+
+    def _fetch_buffer(self):
+        res = None
+        resp = requests.get(
+            url=self.url,
+            impersonate="chrome",
+            headers={
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+                "referer": "https://cpk.msu.ru/"
+            },
+            timeout=5
+        )
+        try:
+            resp.raise_for_status()
+            strainer = SoupStrainer(["h4", "table"])
+            soup = BeautifulSoup(resp.text, "lxml", parse_only=strainer)
+            res = StringIO(str(soup.find("h4", id=self.tag_id).find_next("table")))
+        finally:
+            resp.close()
+        return res
+
+    def _process_df(self, buf):
+        df = pd.read_html(buf)[0].replace({"Да": True, "Нет": False}).fillna(0)
+        tmp = df.iloc[:, np.r_[1:6, 7:9]]
+        tmp.columns = ["id", "agreed", "priority", "is_eligible", "is_locked", "total", "add_sum"]
+        return (
+            tmp
+            .assign(exs=df.iloc[:, 9:-3].astype(str).agg(";".join, axis=1), is_ivan_p=df.iloc[:, -3])
+            .sort_values(
+                by=["total", "priority", "is_ivan_p"],
+                ascending=[False, True, False]
+            )
         )
