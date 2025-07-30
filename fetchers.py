@@ -5,10 +5,17 @@ from pathlib import Path
 import datetime as dt
 
 
-class HSECompetitionFetcher:
-    def __init__(self, url: str, local_dir: str):
+class BaseCompetitionFetcher:
+    def __init__(self, url: str):
         self.url = url
-        self.local_dir = Path(local_dir)
+
+    def load_pipeline(self):
+        raise NotImplementedError
+
+
+class HSECompetitionFetcher(BaseCompetitionFetcher):
+    def __init__(self, url: str):
+        super().__init__(url)
 
     def _fetch_buffer(self):
         resp = requests.get(
@@ -38,18 +45,32 @@ class HSECompetitionFetcher:
             buf, sheet_name=0, skiprows=11, header=None, usecols=[1]+list(range(3, 15)),
             names=[
                 "id", "agreed", "ex_opt", "ex_math", "ex_ru", "ex_sum", "add_sum", "total",
-                "p9", "p10", "priority", "got_anyway", "got_agreedlist"
+                "p9", "p10", "priority", "is_eligible", "is_locked"
             ],
             true_values=["Да"], false_values=["Нет"]
         )
-        return df.fillna(0).sort_values(
-            by=["total", "priority", "p9", "p10", "ex_sum", "ex_math"],
-            ascending=[False, True, False, False, False, False]
+        res = (
+            df
+            .assign(
+                exs=df.loc[:, ["ex_math", "ex_opt", "ex_ru"]].astype(str).agg(";".join, axis=1),
+                is_ivan_p=df.loc[:, ["p9", "p10"]].any(axis=1)
+            )
+            .drop(["ex_math", "ex_opt", "ex_ru", "p9", "p10", "ex_sum"], axis=1)
+            .fillna(0)
+            .sort_values(
+                by=["total", "priority", "is_ivan_p"],
+                ascending=[False, True, False]
+            )
         )
+        return res
 
-    def load_pipeline(self):
+    def load_pipeline(self, output_dir: str):
+        output_dir = Path(output_dir)
         buf = self._fetch_buffer()
         df = self._process_df(buf)
-        self.local_dir.mkdir(parents=True, exist_ok=True)
-        cur_ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        df.to_csv(f"{self.local_dir}/{self.url.split('/')[-1].split('.')[0]}_{cur_ts}.tsv", index=True, sep="\t")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (
+            df
+            .assign(ts=dt.datetime.now().strftime("%Y%m%d_%H%M%S"), ds=self.url.split('/')[-1].split('.')[0])
+            .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=["ds", "ts"])
+        )

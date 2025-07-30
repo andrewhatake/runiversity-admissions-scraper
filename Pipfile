@@ -7,6 +7,9 @@ name = "pypi"
 pandas = "*"
 curl-cffi = "*"
 openpyxl = "*"
+lxml = "*"
+beautifulsoup4 = "*"
+pyarrow = "*"
 
 [dev-packages]
 ipykernel = "*"
