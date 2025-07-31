@@ -20,7 +20,7 @@ class BaseCompetitionFetcher:
         (
             df
             .assign(ts=dt.datetime.now().strftime("%Y%m%d_%H"), ds=self.url.split('/')[-1].split('.')[0])
-            .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=["ts", "ds"])
+            .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=["ts", "ds"], index=False)
         )
 
 
@@ -75,16 +75,17 @@ class HSECompetitionFetcher(BaseCompetitionFetcher):
         )
         return res
 
+
 class MSUCompetitionFetcher(BaseCompetitionFetcher):
     def __init__(self, url: str):
         url_, tag_id_ = url.split("#")
-        super().__init__(url_)
-        self.tag_id = tag_id_
+        super().__init__(f"{url_}-{tag_id_}")
 
     def _fetch_buffer(self):
         res = None
+        url_, tag_id_ = self.url.rsplit("-", 1)
         resp = requests.get(
-            url=self.url,
+            url=url_,
             impersonate="chrome",
             headers={
                 "Accept": "application/json",
@@ -97,7 +98,7 @@ class MSUCompetitionFetcher(BaseCompetitionFetcher):
             resp.raise_for_status()
             strainer = SoupStrainer(["h4", "table"])
             soup = BeautifulSoup(resp.text, "lxml", parse_only=strainer)
-            res = StringIO(str(soup.find("h4", id=self.tag_id).find_next("table")))
+            res = StringIO(str(soup.find("h4", id=tag_id_).find_next("table")))
         finally:
             resp.close()
         return res
@@ -113,4 +114,46 @@ class MSUCompetitionFetcher(BaseCompetitionFetcher):
                 by=["total", "priority", "is_ivan_p"],
                 ascending=[False, True, False]
             )
+        )
+
+
+class MIPTCompetitionFetcher(BaseCompetitionFetcher):
+    def __init__(self, url: str):
+        super().__init__(url)
+
+    def _fetch_buffer(self):
+        resp = requests.get(
+            url=self.url,
+            impersonate="chrome",
+            headers={
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+                "referer": "https://priem.mipt.ru"
+            }
+        )
+        try:
+            resp.raise_for_status()
+            strainer = SoupStrainer(["table"])
+            soup = BeautifulSoup(resp.text, "lxml", parse_only=strainer)
+            res = StringIO(str(soup.find("table")))
+        finally:
+            resp.close()
+        return res
+
+    def _process_df(self, buf):
+        df = pd.read_html(buf)[0]
+        tmp = df.iloc[:, np.r_[1:6, 7]]
+        tmp.columns = ["priority", "id", "is_eligible", "is_locked", "total", "add_sum"]
+        tmp = tmp.assign(
+            agreed=~df.iloc[:, 11].isna(),
+            is_eligible=tmp.loc[:, "is_eligible"].astype(bool),
+            is_locked=tmp.loc[:, "is_locked"].astype(bool),
+            is_ivan_p=~df.iloc[:, 14:17].isna().any(axis=1),
+            exs=df.iloc[:, 18:-4:3].fillna("0").replace({"Неявка": "0"}).astype(str).agg(";".join, axis=1)
+        )
+        tmp.loc[:, "exs"] = tmp.loc[:, "exs"].mask(((tmp.total < 50) & (tmp.is_ivan_p)), "100;100;100;100;100")
+        tmp.loc[:, "total"] = tmp.loc[:, "total"].mask(((tmp.total < 50) & (tmp.is_ivan_p)), 500)
+        return tmp.sort_values(
+            by=["total", "priority", "is_ivan_p"],
+            ascending=[False, True, False]
         )

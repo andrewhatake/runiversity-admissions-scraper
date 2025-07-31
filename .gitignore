@@ -7,3 +7,4 @@
 *.txt
 *.xlsx
 Pipfile.lock
+__pycache__/
