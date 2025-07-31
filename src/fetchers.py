@@ -6,28 +6,34 @@ from curl_cffi import requests
 from io import BytesIO, StringIO
 from pathlib import Path
 from bs4 import BeautifulSoup, SoupStrainer
+from .models import CompetitionModel
 
 
 class BaseCompetitionFetcher:
-    def __init__(self, url: str):
-        self.url = url
+    def __init__(self, comp: CompetitionModel):
+        self.comp = comp
+    
+    @property
+    def url(self):
+        return self.comp.url
 
     def load_pipeline(self, output_dir: str):
         output_dir = Path(output_dir)
         buf = self._fetch_buffer()
-        df = self._process_df(buf)
+        df = self._process_df(buf).sort_values(
+            by=["total", "priority", "is_ivan_p"],
+            ascending=[False, True, False]
+        )
+        part_dict = {k: v for k, v in self.comp.to_dict().items() if k != "url"}
         output_dir.mkdir(parents=True, exist_ok=True)
         (
             df
-            .assign(ts=dt.datetime.now().strftime("%Y%m%d_%H"), ds=self.url.split('/')[-1].split('.')[0])
-            .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=["ts", "ds"], index=False)
+            .assign(ts=dt.datetime.now().strftime("%Y%m%d_%H"), **part_dict)
+            .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=["ts"]+list(part_dict.keys()), index=False)
         )
 
-
+# status if in list
 class HSECompetitionFetcher(BaseCompetitionFetcher):
-    def __init__(self, url: str):
-        super().__init__(url)
-
     def _fetch_buffer(self):
         resp = requests.get(
             url=self.url,
@@ -68,22 +74,13 @@ class HSECompetitionFetcher(BaseCompetitionFetcher):
             )
             .drop(["ex_math", "ex_opt", "ex_ru", "p9", "p10", "ex_sum"], axis=1)
             .fillna(0)
-            .sort_values(
-                by=["total", "priority", "is_ivan_p"],
-                ascending=[False, True, False]
-            )
         )
         return res
 
-
 class MSUCompetitionFetcher(BaseCompetitionFetcher):
-    def __init__(self, url: str):
-        url_, tag_id_ = url.split("#")
-        super().__init__(f"{url_}-{tag_id_}")
-
     def _fetch_buffer(self):
         res = None
-        url_, tag_id_ = self.url.rsplit("-", 1)
+        url_, tag_id_ = self.url.rsplit("#", 1)
         resp = requests.get(
             url=url_,
             impersonate="chrome",
@@ -105,22 +102,18 @@ class MSUCompetitionFetcher(BaseCompetitionFetcher):
 
     def _process_df(self, buf):
         df = pd.read_html(buf)[0].replace({"Да": True, "Нет": False}).fillna(0)
-        tmp = df.iloc[:, np.r_[1:6, 7:9]]
+        tmp = df.loc[df.iloc[:, -1] == "В конкурсе"].iloc[:, np.r_[1:6, 7:9]]
         tmp.columns = ["id", "agreed", "priority", "is_eligible", "is_locked", "total", "add_sum"]
         return (
             tmp
             .assign(exs=df.iloc[:, 9:-3].astype(str).agg(";".join, axis=1), is_ivan_p=df.iloc[:, -3])
-            .sort_values(
-                by=["total", "priority", "is_ivan_p"],
-                ascending=[False, True, False]
-            )
+            .dropna(axis=0)
+            
         )
 
 
+# status 8
 class MIPTCompetitionFetcher(BaseCompetitionFetcher):
-    def __init__(self, url: str):
-        super().__init__(url)
-
     def _fetch_buffer(self):
         resp = requests.get(
             url=self.url,
@@ -142,7 +135,7 @@ class MIPTCompetitionFetcher(BaseCompetitionFetcher):
 
     def _process_df(self, buf):
         df = pd.read_html(buf)[0]
-        tmp = df.iloc[:, np.r_[1:6, 7]]
+        tmp = df.loc[df.iloc[:, 9] == "Да"].iloc[:, np.r_[1:7]]
         tmp.columns = ["priority", "id", "is_eligible", "is_locked", "total", "add_sum"]
         tmp = tmp.assign(
             agreed=~df.iloc[:, 11].isna(),
@@ -153,7 +146,11 @@ class MIPTCompetitionFetcher(BaseCompetitionFetcher):
         )
         tmp.loc[:, "exs"] = tmp.loc[:, "exs"].mask(((tmp.total < 50) & (tmp.is_ivan_p)), "100;100;100;100;100")
         tmp.loc[:, "total"] = tmp.loc[:, "total"].mask(((tmp.total < 50) & (tmp.is_ivan_p)), 500)
-        return tmp.sort_values(
-            by=["total", "priority", "is_ivan_p"],
-            ascending=[False, True, False]
-        )
+        return tmp.dropna(axis=0)
+
+
+# Automatically build a registry of all CompetitionFetcher subclasses
+FETCHER_REGISTRY = {
+    cls.__name__: cls
+    for cls in BaseCompetitionFetcher.__subclasses__()
+}
