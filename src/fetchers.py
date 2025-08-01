@@ -32,7 +32,7 @@ class BaseCompetitionFetcher:
         (
             df
             .assign(ts=dt.datetime.now().strftime("%Y%m%d_%H"), **part_dict)
-            .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=["ts"]+list(part_dict.keys()), index=False)
+            .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=list(part_dict.keys())+["ts"], index=False)
         )
 
 

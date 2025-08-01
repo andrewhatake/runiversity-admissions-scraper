@@ -1,15 +1,30 @@
-import json, asyncio, time, random, argparse
+import json, asyncio, time, random, argparse, logging
 from src.models import CompetitionModel
 from src.fetchers import FETCHER_REGISTRY
 from concurrent.futures import ThreadPoolExecutor
 
-MIN_PAUSE = 5
-MAX_PAUSE = 10
-MAX_PARALLEL = 10
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s::%(levelname)s::%(message)s',
+    filename='fetch.log',
+    filemode='w'
+)
+
+
+MIN_PAUSE = 10
+MAX_PAUSE = 20
+MAX_PARALLEL = 20
+
 
 def _run(fetcher, target_dir):
     time.sleep(random.uniform(MIN_PAUSE, MAX_PAUSE))
-    fetcher.load_pipeline(target_dir)
+    logging.info(f"fetching URL: {fetcher.url}")
+    try:
+        fetcher.load_pipeline(target_dir)
+        logging.info(f"successfully fetched URL: {fetcher.url}")
+    except Exception as e:
+        logging.error(f"Failed to fetch URL: {fetcher.url} with error: {e}", exc_info=True)
+        # Optionally, re-raise or handle as needed for asyncio/ThreadPoolExecutor
 
 
 async def main(target_dir, *tasks):
@@ -26,4 +41,5 @@ if __name__ == "__main__":
     with open(args.input, "r") as hndl:
         task_dict = json.load(hndl)
     fetch_l = [FETCHER_REGISTRY[f"{d['name']}CompetitionFetcher"](CompetitionModel.from_dict(d)) for d in task_dict]
+    random.shuffle(fetch_l)
     asyncio.run(main(args.output, *fetch_l))
