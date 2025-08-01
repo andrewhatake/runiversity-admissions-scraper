@@ -8,6 +8,7 @@ class CompetitionModel:
     faculty: str
     speciality: str
     type: str
+    limit: int
 
     @classmethod
     def from_dict(cls, data: dict):

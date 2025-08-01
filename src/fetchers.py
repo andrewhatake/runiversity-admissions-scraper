@@ -8,6 +8,9 @@ from pathlib import Path
 from bs4 import BeautifulSoup, SoupStrainer
 from .models import CompetitionModel
 
+import warnings
+warnings.simplefilter('ignore', FutureWarning)
+
 
 class BaseCompetitionFetcher:
     def __init__(self, comp: CompetitionModel):
@@ -24,7 +27,7 @@ class BaseCompetitionFetcher:
             by=["total", "priority", "is_ivan_p"],
             ascending=[False, True, False]
         )
-        part_dict = {k: v for k, v in self.comp.to_dict().items() if k != "url"}
+        part_dict = {k: v for k, v in self.comp.to_dict().items() if k not in ["url", "limit"]}
         output_dir.mkdir(parents=True, exist_ok=True)
         (
             df
@@ -32,7 +35,7 @@ class BaseCompetitionFetcher:
             .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=["ts"]+list(part_dict.keys()), index=False)
         )
 
-# status if in list
+
 class HSECompetitionFetcher(BaseCompetitionFetcher):
     def _fetch_buffer(self):
         resp = requests.get(
@@ -101,18 +104,18 @@ class MSUCompetitionFetcher(BaseCompetitionFetcher):
         return res
 
     def _process_df(self, buf):
-        df = pd.read_html(buf)[0].replace({"Да": True, "Нет": False}).fillna(0)
+        df = pd.read_html(buf)[0].fillna(0)
         tmp = df.loc[df.iloc[:, -1] == "В конкурсе"].iloc[:, np.r_[1:6, 7:9]]
         tmp.columns = ["id", "agreed", "priority", "is_eligible", "is_locked", "total", "add_sum"]
         return (
             tmp
-            .assign(exs=df.iloc[:, 9:-3].astype(str).agg(";".join, axis=1), is_ivan_p=df.iloc[:, -3])
+            .assign(exs=df.iloc[:, 9:-3].astype(str).agg(";".join, axis=1), is_ivan_p=df.iloc[:, -3].str[:3].str.strip())
+            .replace({"Да": True, "Нет": False})
             .dropna(axis=0)
             
         )
 
 
-# status 8
 class MIPTCompetitionFetcher(BaseCompetitionFetcher):
     def _fetch_buffer(self):
         resp = requests.get(
@@ -149,7 +152,6 @@ class MIPTCompetitionFetcher(BaseCompetitionFetcher):
         return tmp.dropna(axis=0)
 
 
-# Automatically build a registry of all CompetitionFetcher subclasses
 FETCHER_REGISTRY = {
     cls.__name__: cls
     for cls in BaseCompetitionFetcher.__subclasses__()
