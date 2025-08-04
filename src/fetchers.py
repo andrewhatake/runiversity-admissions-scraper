@@ -6,7 +6,7 @@ from curl_cffi import requests
 from io import BytesIO, StringIO
 from pathlib import Path
 from bs4 import BeautifulSoup, SoupStrainer
-from .models import CompetitionModel
+from .models import CompetitionModel, COMP_COLS
 
 import warnings
 warnings.simplefilter('ignore', FutureWarning)
@@ -27,11 +27,12 @@ class BaseCompetitionFetcher:
             by=["total", "priority", "is_ivan_p"],
             ascending=[False, True, False]
         )
-        part_dict = {k: v for k, v in self.comp.to_dict().items() if k not in ["url", "limit"]}
+        part_dict = {k: getattr(self.comp, k) for k in COMP_COLS}
         output_dir.mkdir(parents=True, exist_ok=True)
         (
             df
             .assign(ts=dt.datetime.now().strftime("%Y%m%d_%H"), **part_dict)
+            .drop_duplicates(subset=["id"])
             .to_parquet(output_dir / "data", engine="pyarrow", partition_cols=list(part_dict.keys())+["ts"], index=False)
         )
 
@@ -46,7 +47,7 @@ class HSECompetitionFetcher(BaseCompetitionFetcher):
                 "X-Requested-With": "XMLHttpRequest",
                 "referer": "https://ba.hse.ru/finlist"
             },
-            timeout=5,
+            timeout=15,
             stream=True
         )
         buf = BytesIO()
@@ -64,7 +65,7 @@ class HSECompetitionFetcher(BaseCompetitionFetcher):
         df = pd.read_excel(
             buf, sheet_name=0, skiprows=11, header=None, usecols=[1]+list(range(3, 15)),
             names=[
-                "id", "agreed", "ex_opt", "ex_math", "ex_ru", "ex_sum", "add_sum", "total",
+                "id", "agreed", "ex_1", "ex_2", "ex_3", "ex_sum", "add_sum", "total",
                 "p9", "p10", "priority", "is_eligible", "is_locked"
             ],
             true_values=["Да"], false_values=["Нет"]
@@ -72,13 +73,14 @@ class HSECompetitionFetcher(BaseCompetitionFetcher):
         res = (
             df
             .assign(
-                exs=df.loc[:, ["ex_math", "ex_opt", "ex_ru"]].astype(str).agg(";".join, axis=1),
+                exs=df.loc[:, ["ex_1", "ex_2", "ex_3"]].astype(str).agg(";".join, axis=1),
                 is_ivan_p=df.loc[:, ["p9", "p10"]].any(axis=1)
             )
-            .drop(["ex_math", "ex_opt", "ex_ru", "p9", "p10", "ex_sum"], axis=1)
+            .drop(["ex_1", "ex_2", "ex_3", "p9", "p10", "ex_sum"], axis=1)
             .fillna(0)
         )
         return res
+
 
 class MSUCompetitionFetcher(BaseCompetitionFetcher):
     def _fetch_buffer(self):
@@ -92,7 +94,7 @@ class MSUCompetitionFetcher(BaseCompetitionFetcher):
                 "X-Requested-With": "XMLHttpRequest",
                 "referer": "https://cpk.msu.ru/"
             },
-            timeout=5
+            timeout=15
         )
         try:
             resp.raise_for_status()
@@ -115,6 +117,15 @@ class MSUCompetitionFetcher(BaseCompetitionFetcher):
             
         )
 
+    def load_ivan_p(self, output_dir: str):
+        output_dir = Path(output_dir)
+        buf = self._fetch_buffer()
+        df = pd.read_html(buf)[0].fillna(0)
+        with open(output_dir / "msu.txt", "a") as hndl:
+            for p in df.iloc[:, 1].astype(str).str[-6:].str.lstrip('0'):
+                hndl.write(f"{p}\n")
+
+
 
 class MIPTCompetitionFetcher(BaseCompetitionFetcher):
     def _fetch_buffer(self):
@@ -125,7 +136,8 @@ class MIPTCompetitionFetcher(BaseCompetitionFetcher):
                 "Accept": "application/json",
                 "X-Requested-With": "XMLHttpRequest",
                 "referer": "https://priem.mipt.ru"
-            }
+            },
+            timeout=15
         )
         try:
             resp.raise_for_status()
@@ -138,7 +150,7 @@ class MIPTCompetitionFetcher(BaseCompetitionFetcher):
 
     def _process_df(self, buf):
         df = pd.read_html(buf)[0]
-        tmp = df.loc[df.iloc[:, 9] == "Да"].iloc[:, np.r_[1:7]]
+        tmp = df.loc[df.iloc[:, 9] == "Да"].iloc[:, np.r_[1:6, 7]]
         tmp.columns = ["priority", "id", "is_eligible", "is_locked", "total", "add_sum"]
         tmp = tmp.assign(
             agreed=~df.iloc[:, 11].isna(),
